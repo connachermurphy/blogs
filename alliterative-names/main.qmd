@@ -1,0 +1,231 @@
+---
+title: "Alliterative Names"
+author: "Connacher Murphy"
+date: "2024-11-22"
+output: html_document
+execute:
+  python:
+    path: ../venv/bin/python3
+---
+
+# 0. Libraries
+```{python}
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import string
+```
+
+# 1. Environment
+```{python}
+path_data = "~/data/voters"
+path_out = "out"
+
+top_n = 18
+
+plt_style = "bmh"
+```
+
+# 2. Read the voter data
+```{python}
+# Read the voter data
+nc_voters = pd.read_csv(
+    f"{path_data}/ncvoter_Statewide.txt",
+    sep="\t",
+    encoding="latin1",
+    usecols=["ncid", "last_name", "first_name", "middle_name", "gender_code"],
+)
+
+# Create first and last initials
+nc_voters["last_initial"] = nc_voters["last_name"].str[0]
+nc_voters["first_initial"] = nc_voters["first_name"].str[0]
+
+# Check if both initials are valid
+nc_voters["last_valid"] = nc_voters["last_initial"].str.isalpha()
+nc_voters["first_valid"] = nc_voters["first_initial"].str.isalpha()
+nc_voters["valid"] = nc_voters["last_valid"] * nc_voters["first_valid"]
+
+print(nc_voters["valid"].value_counts())
+
+# Filter to only valid initials
+nc_voters = nc_voters[nc_voters["valid"] == 1]
+nc_voters_male = nc_voters[nc_voters["gender_code"] == "M"]
+```
+
+# 3. Cross-tabulation
+```{python}
+# Create the cross-tabulation
+matrix = pd.crosstab(
+    nc_voters["first_initial"], 
+    nc_voters["last_initial"]
+)
+matrix_male = pd.crosstab(
+    nc_voters_male["first_initial"], 
+    nc_voters_male["last_initial"]
+)
+
+# Reindex with alphabet to ensure proper order
+alphabet = list(string.ascii_uppercase)
+matrix = matrix.reindex(index=alphabet, columns=alphabet, fill_value=0)
+matrix_male = matrix_male.reindex(index=alphabet, columns=alphabet, fill_value=0)
+
+# Number of rows
+if matrix.shape[0] != len(alphabet):
+    raise ValueError("Number of rows does not match alphabet")
+if matrix_male.shape[0] != len(alphabet):
+    raise ValueError("Number of rows does not match alphabet")
+
+# Number of columns
+if matrix.shape[1] != len(alphabet):
+    raise ValueError("Number of columns does not match alphabet")
+if matrix_male.shape[1] != len(alphabet):
+    raise ValueError("Number of columns does not match alphabet")
+
+matrix = matrix.to_numpy()
+matrix_male = matrix_male.to_numpy()
+```
+
+# 4. Calculate alliteration probabilities
+```{python}
+def alliteration_probabilities(matrix):
+    # Calculate alliteration probabilities
+    diag = np.diag(matrix)
+    col_sums = matrix.sum(axis=0)
+    row_sums = matrix.sum(axis=1)
+    total = matrix.sum()
+
+    P_match = diag / col_sums
+    P_mismatch = (row_sums - diag) / (total - col_sums)
+
+    P_first = row_sums / total
+    P_last = col_sums / total
+
+    results = pd.DataFrame({
+        "first_initial": alphabet,
+        "P_match": P_match,
+        "P_mismatch": P_mismatch,
+        "P_first": P_first,
+        "P_last": P_last,
+    })
+
+    results["ratio"] = results["P_match"] / results["P_mismatch"]
+
+    results["independent"] = results["P_first"] * results["P_last"]
+
+    results["actual"] = results["P_match"] * results["P_last"]
+    results["diff_pp"] = results["actual"] - results["independent"]
+    results["diff_pc"] = results["actual"] / results["independent"] - 1
+
+    results_sorted = results.sort_values("independent", ascending=False)
+    results_sorted["cumsum_independent"] = results_sorted["independent"].cumsum()
+
+    return results_sorted
+
+results = alliteration_probabilities(matrix)
+results_male = alliteration_probabilities(matrix_male)
+
+results_sorted_top = results.head(top_n)
+results_sorted_top_male = results_male.head(top_n)
+
+print(results_sorted_top)
+```
+
+# 5. Aggregate probabilities
+```{python}
+# All:
+print("All:")
+independent_agg = (results["independent"]).sum()
+actual_agg = (results["actual"]).sum()
+
+print(f"Independent: {independent_agg:.4f}")
+print(f"Actual: {actual_agg:.4f}")
+
+print(f"% difference: {actual_agg / independent_agg - 1:.4f}")
+
+# Male:
+print("\nMale:")
+independent_agg_male = (results_male["independent"]).sum()
+actual_agg_male = (results_male["actual"]).sum()
+
+print(f"Independent: {independent_agg_male:.4f}")
+print(f"Actual: {actual_agg_male:.4f}")
+
+print(f"% difference: {actual_agg_male / independent_agg_male - 1:.4f}")
+```
+
+# 6. Plots
+```{python}
+# Initialize figure
+fig, axs = plt.subplots(2, 1, figsize=(7, 7), sharex=True)
+plt.style.use(plt_style)
+
+# Panel A. % difference between actual and independent probabilities
+axs[0].bar(results_sorted_top["first_initial"], results_sorted_top["diff_pc"], zorder=2)
+axs[0].axhline(0, zorder=1)
+
+axs[0].set_ylabel("$\Delta^{\omega}$")
+axs[0].set_title("Panel A. $\Delta^{\omega}$ by Initial")
+
+# Add alphabet to Panel A
+axs[0].tick_params(bottom=True, labelbottom=True)
+axs[0].spines["bottom"].set_visible(True)
+
+# Panel B. P(first)
+buffer = 0.05
+left_ytop = results_sorted_top["actual"].max()
+right_ytop = independent_agg
+
+axs[1].scatter(
+    results_sorted["first_initial"],
+    results_sorted["independent"],
+    label="Probability",
+    zorder=2,
+)
+axs[1].set_ylim(-1.0 * buffer * left_ytop, left_ytop * (1 + buffer))
+
+axs[1].set_ylabel("$\mathbb{P}\\{f = \omega\\} \\times \\mathbb{P}\\{l = \omega\\}$")
+axs[1].set_title(
+    "Panel B. (Cumulative) $\mathbb{P}\\{f = \omega\\} \\times \mathbb{P}\\{l = \omega\\}$ by Initial"
+)
+
+# Add cumulative P(first) to Panel B
+ax2 = axs[1].twinx()
+ax2.plot(
+    results_sorted["first_initial"],
+    results_sorted["cumsum_independent"],
+    label="Cumulative",
+    zorder=1,
+)
+ax2.set_ylim(-1.0 * buffer * right_ytop, right_ytop * (1 + buffer))
+ax2.set_ylabel(
+    "Cumulative $\mathbb{P}\\{f = \omega\\} \\times \\mathbb{P}\\{l = \omega\\}$"
+)
+# axs[1].legend()
+# ax2.legend()
+
+# Get handles and labels from both axes
+lines1, labels1 = axs[1].get_legend_handles_labels()
+lines2, labels2 = ax2.get_legend_handles_labels()
+
+# Remove individual legends
+axs[1].legend().remove()
+ax2.legend().remove()
+
+# Create combined legend
+axs[1].legend(lines1 + lines2, labels1 + labels2, loc="center right")
+
+axs[0].grid(True, zorder=0)
+axs[1].grid(True, zorder=0)
+ax2.grid(False)
+
+
+# ax2.plot(results_sorted["first_initial"], results_sorted["cumsum_P_first"], color="red")
+
+
+# plt.scatter(results["first_initial"], results["P_match"])
+# plt.scatter(results["first_initial"], results["P_mismatch"], color="red")
+
+fig.tight_layout()
+fig.savefig(f"{path_out}/alliterative-names.png", dpi=300)
+
+```
